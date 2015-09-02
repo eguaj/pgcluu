@@ -342,7 +342,7 @@ if ($SHOW_VER) {
 # The daemon should be stopped
 if ($KILL) {
 	if (-e "$PIDFILE") {
-		system("kill -15 `cat $PIDFILE`");
+		system("kill -15 " . quotemeta(x("cat " . quotemeta($PIDFILE))));
 		if ($? == -1) {
 			print "FATAL: failed to execute: $!\n";
 		} elsif ($? & 127) {
@@ -527,6 +527,20 @@ if ($OS_INFO && !$NO_SYSINFO) {
 	exit 0;
 }
 
+sub x
+{
+	my $arg = shift;
+	&dprint(sprintf("LOG: cmd = %s\n", $arg));
+	return `$arg`;
+}
+
+sub sql
+{
+	my $psql = shift;
+	my $sql = shift;
+	my $append = shift || '';
+	return x(sprintf("%s -c %s %s", $psql, quotemeta($sql), $append));
+}
 
 # Die cleanly on signal
 sub terminate
@@ -595,11 +609,7 @@ if ($NO_DATABASE) {
 	$PSQL_PROG .= " -p $DBPORT" if ($DBPORT);
 	$PSQL_PROG .= " -U $DBUSER" if ($DBUSER);
 	if ($#dbnames >= 0) {
-		if ($dbnames[0] !~ /^[a-z0-9\_\-]+$/i) {
-			$PSQL_PROG .= " -d '$dbnames[0]'";
-		} else {
-			$PSQL_PROG .= " -d $dbnames[0]";
-		}
+		$PSQL_PROG .= " -d " . quotemeta($dbnames[0]);
 	}
 	if ($DBPASS) {
 		$ENV{PGPASSWORD} = $DBPASS;
@@ -750,9 +760,9 @@ while (1) {
 			my $filename = basename($f);
 			next if (-e "$OUT_DIR/$filename"); # Do not copy file twice in same directory
 			if ($sshcmd) {
-				`$sshcmd "$CAT_PROG $f" >$outdir/$filename 2>/dev/null`;
+				x(sprintf("%s %s > %s 2>/dev/null", $sshcmd, quotemeta("$CAT_PROG $f"), quotemeta("$outdir/$filename")));
 			} else {
-				`$CAT_PROG $f >$outdir/$filename 2>/dev/null`;
+				x(sprintf("%s %s > %s 2>/dev/null", $CAT_PROG, quotemeta($f), quotemeta("$outdir/$filename")));
 			}
 			# remove file when empty
 			unlink("$OUT_DIR/$filename" ) if (-z "$OUT_DIR/$filename");
@@ -787,6 +797,7 @@ while (1) {
 	if (!$NO_DATABASE) {
 		# Collecting database statistics if there other than pgbouncer metrics to collect
 		if ($PG_RET >= 0) {
+			&dprint(sprintf("LOG: cmd = %s\n", "| $PSQL_PROG"));
 			open(PSQL, "| $PSQL_PROG");
 			print PSQL $script_sql, "\n";
 			close(PSQL);
@@ -805,14 +816,15 @@ while (1) {
 					last;
 				}
 				my $LOCAL_PSQL_PROG = $PSQL_PROG;
-				if ($db && ($LOCAL_PSQL_PROG !~ s/-d $dbnames[0]/-d $db/i)) {
-					if ($db !~ /^[a-z0-9\_\-]+$/i) {
-						$LOCAL_PSQL_PROG .= " -d '$db'";
-					} else {
-						$LOCAL_PSQL_PROG .= " -d $db";
+				if ($db) {
+					my $dbQuoted = quotemeta($db);
+					my $dbnames0Quoted = quotemeta($dbnames[0]);
+					if (($LOCAL_PSQL_PROG !~ s/-d \Q$dbnames0Quoted\E/-d $dbQuoted/i)) {
+						$LOCAL_PSQL_PROG .= " -d " . $dbQuoted;
 					}
 				}
 				# Collecting database statistics
+				&dprint(sprintf("LOG: cmd = %s\n", "| $LOCAL_PSQL_PROG"));
 				open(PSQL, "| $LOCAL_PSQL_PROG");
 				print PSQL $script_repeat_sql, "\n";
 				close(PSQL);
@@ -835,7 +847,8 @@ while (1) {
 				}
 				die "FATAL: no SQL with metric command pgbouncer_stats ($sql).\n" if (!$sql || $@);
 			}
-			`$PGBOUNCER_PROG -c "$sql" | sed 's/^/$timestamp;/' $FILE_REDIR $OUT_DIR/$METRICS_COMMANDS{$c}->{output}`;
+			x(sprintf("%s -c %s | sed %s %s %s", $PGBOUNCER_PROG, quotemeta($sql), quotemeta("s/^/$timestamp;/"), $FILE_REDIR, quotemeta("$OUT_DIR/$METRICS_COMMANDS{$c}->{output}")));
+			sql($PGBOUNCER_PROG, $sql, sprintf("| sed %s %s %s", quotemeta("s/^/$timestamp;/"), $FILE_REDIR, quotemeta("$OUT_DIR/$METRICS_COMMANDS{$c}->{output}")));
 			if ($? != 0) {
 				&dprint("LOG: $PGBOUNCER_PROG -c \"$sql\" | sed 's/^/$timestamp;/' $FILE_REDIR $OUT_DIR/$METRICS_COMMANDS{$c}->{output}\n");
 				&dprint("ERROR: pgbouncer pool query failure, $!\n");
@@ -845,13 +858,13 @@ while (1) {
 
 	# Collecting system statistics
 	if (!$DISABLE_SAR && $sar_command && ($sysstat_version > -1)) {
-		&dprint(`$sar_command`);
+		&dprint(x($sar_command));
 	}
 
 	if (!$CAPTURE) {
 		# Lookup if output dir size is upper than limit
 		if ($MAX_SIZE) {
-			my $lsize = `du -s $OUTPUT_DIR`;
+			my $lsize = x(sprintf("du -s %s", quotemeta($OUTPUT_DIR)));
 			chomp($lsize);
 			if ($lsize > $MAX_SIZE) {
 				&dprint("LOG: max size limit reach, terminating.\n");
@@ -887,11 +900,11 @@ if ($CAPTURE) {
 	chdir($CAPTURE_DIR);
 	# Then create a tarball before removing the output directory
 	print "INFO: creating archive $CAPTURE_DIR/pgcluu_capture.tar.gz of the capture directory $CAPTURE_DIR/$OUTPUT_DIR.\n";
-	`$TAR_PROG pgcluu_capture.tar.gz $OUTPUT_DIR`;
+	x(sprintf("%s %s %s", $TAR_PROG, quotemeta("gcluu_capture.tar.gz"), quotemeta($OUTPUT_DIR)));
 	# Removing temporary directory and ensure that we are not removing anything else
 	print "INFO: removing capture temporary directory: $CAPTURE_DIR/$OUTPUT_DIR\n";
 	if ($OUTPUT_DIR eq 'pgcluu_capture') {
-		`rm -rf $OUTPUT_DIR`;
+		x(sprintf("rm -rf %s", quotemeta($OUTPUT_DIR)));
 	}
 }
 
@@ -1103,7 +1116,7 @@ sub fetch_version
 
 	return -1 if ($NO_DATABASE);
 
-	my $pg_ver = `$PSQL_PROG -c "SELECT version();" 2>&1`;
+	my $pg_ver = x(sprintf("%s -c %s 2>&1", $PSQL_PROG, quotemeta("SELECT version();")));
 	if ($? != 0) {
 		# Only stop here if there's no pgbouncer querying
 		if (!$PGBOUNCER_ARGS) {
@@ -1146,13 +1159,9 @@ sub get_extensions
 
 	my $LOCAL_PSQL_PROG = $PSQL_PROG;
 	if ($database && ($LOCAL_PSQL_PROG !~ s/-d $dbnames[0]/-d $database/i)) {
-		if ($database !~ /^[a-z0-9\_\-]+$/i) {
-			$LOCAL_PSQL_PROG .= " -d '$database'";
-		} else {
-			$LOCAL_PSQL_PROG .= " -d $database";
-		}
+		$LOCAL_PSQL_PROG .= " -d " . quotemeta($database);
 	}
-	my @db_extension = `$LOCAL_PSQL_PROG -c "SELECT extname||'-'||extversion FROM pg_extension;"`;
+	my @db_extension = x(sprintf("%s -c %s", $LOCAL_PSQL_PROG, quotemeta("SELECT extname||'-'||extversion FROM pg_extension;")));
 	if ($? != 0) {
 		&dprint("FATAL: psql error.\n");
 		# remove the pidfile
@@ -1172,7 +1181,7 @@ sub get_extensions
 sub get_databases
 {
 
-	my @dbs = `$PSQL_PROG -c "SELECT datname FROM pg_database WHERE NOT datistemplate AND datallowconn;"`;
+	my @dbs = x(sprintf("%s -c %s", $PSQL_PROG, quotemeta("SELECT datname FROM pg_database WHERE NOT datistemplate AND datallowconn;")));
 	if ($? != 0) {
 		&dprint("FATAL: psql error.\n");
 		# remove the pidfile
@@ -1195,13 +1204,9 @@ sub get_schemas
 
 	my $LOCAL_PSQL_PROG = $PSQL_PROG;
 	if ($database && ($LOCAL_PSQL_PROG !~ s/-d $dbnames[0]/-d $database/i)) {
-		if ($database !~ /^[a-z0-9\_\-]+$/i) {
-			$LOCAL_PSQL_PROG .= " -d '$database'";
-		} else {
-			$LOCAL_PSQL_PROG .= " -d $database";
-		}
+		$LOCAL_PSQL_PROG .= " -d " . quotemeta($database);
 	}
-	my @db_schema = `$LOCAL_PSQL_PROG -c "SELECT nspname FROM pg_namespace WHERE nspname !~ '^pg_' AND nspname <> 'information_schema' ORDER BY 1"`;
+	my @db_schema = x(sprintf("%s -c %s", $LOCAL_PSQL_PROG, quotemeta("SELECT nspname FROM pg_namespace WHERE nspname !~ '^pg_' AND nspname <> 'information_schema' ORDER BY 1")));
 	if ($? != 0) {
 		&dprint("FATAL: psql error.\n");
 		# remove the pidfile
@@ -1221,7 +1226,7 @@ sub get_schemas
 sub has_pg_buffercache
 {
 
-	my $hasit = `$PSQL_PROG -c "SELECT proname FROM pg_proc WHERE proname = 'pg_buffercache_pages';"`;
+	my $hasit = x(sprintf("%s -c %s", $PSQL_PROG, quotemeta("SELECT proname FROM pg_proc WHERE proname = 'pg_buffercache_pages';")));
 	if ($? != 0) {
 		&dprint("FATAL: psql error.\n");
 		# remove the pidfile
@@ -1242,7 +1247,7 @@ sub has_pg_buffercache
 sub has_pgstatstatements
 {
 
-	my $hasit = `$PSQL_PROG -c "SELECT n.nspname||'.'||p.proname FROM pg_proc p, pg_namespace n WHERE p.proname='pg_stat_statements' AND p.pronamespace=n.oid;"`;
+	my $hasit = sql($PSQL_PROG, "SELECT n.nspname||'.'||p.proname FROM pg_proc p, pg_namespace n WHERE p.proname='pg_stat_statements' AND p.pronamespace=n.oid;");
 	if ($? != 0) {
 		&dprint("FATAL: psql error.\n");
 		# remove the pidfile
@@ -1264,7 +1269,7 @@ sub is_superuser
 	# Assume it is superuser per default. In any case this will raise a psql error.
 	return 1 if (!$usr);
 
-	$DB_INFO{is_superuser} = `$PSQL_PROG -c "SELECT 1 FROM pg_user WHERE usename='$usr' AND usesuper"`;
+	$DB_INFO{is_superuser} = sql($PSQL_PROG, "SELECT 1 FROM pg_user WHERE usename='$usr' AND usesuper");
 	chomp($DB_INFO{is_superuser});
 
 	return $DB_INFO{is_superuser};
@@ -1275,9 +1280,9 @@ sub sysstat_version
 {
 	if (!$DISABLE_SAR) {
 		my $ver_command = "LC_ALL=C $SAR_PROG -V 2>&1";
-		$ver_command = $sshcmd . ' "' . $ver_command . '"' if ($sshcmd) ;
+		$ver_command = sprintf("%s %s", $sshcmd, quotemeta($ver_command)) if ($sshcmd) ;
 		my $ver = 0;
-		$ver = `$ver_command | grep "sysstat version"`;
+		$ver = x(sprintf("%s | grep %s", $ver_command, quotemeta("sysstat version")));
 		if ($?) {
 			&dprint("ERROR: $SAR_PROG execution failure: $!\n");
 			return -1;
@@ -1294,59 +1299,59 @@ sub grab_os_information
 
 	# Look at CPU informations
 	my $cmd = 'cat /proc/cpuinfo 2>/dev/null';
-	$cmd = $sshcmd . ' "' . $cmd . "\"" if ($sshcmd);
-	my @cpuinfo = `$cmd | grep -E "model name|cpu MHz|cache size|cpu cores|processor"`;
+	$cmd = sprintf("%s %s", $sshcmd, quotemeta($cmd)) if ($sshcmd);
+	my @cpuinfo = x(sprintf("%s | grep -E \"model name|cpu MHz|cache size|cpu cores|processor\"", $cmd));
 	# Look at kernel informations
 	$cmd = 'uname -a  2>/dev/null';
-	$cmd = $sshcmd . ' "' . $cmd . "\"" if ($sshcmd);
-	my $kernel_info = `$cmd`;
+	$cmd = sprintf("%s %s", $sshcmd, quotemeta($cmd)) if ($sshcmd);
+	my $kernel_info = x($cmd);
 	# Look at memory informations
 	$cmd = 'cat /proc/meminfo 2>/dev/null';
-	$cmd = $sshcmd . ' "' . $cmd . "\"" if ($sshcmd);
-	my @meminfo = `$cmd`;
+	$cmd = sprintf("%s %s", $sshcmd, quotemeta($cmd)) if ($sshcmd);
+	my @meminfo = x($cmd);
 	# Look at filesystem informations
 	$cmd = 'df -h 2>/dev/null';
-	$cmd = $sshcmd . ' "' . $cmd . "\"" if ($sshcmd);
-	my @dfinfo = `$cmd`;
+	$cmd = sprintf("%s %s", $sshcmd, quotemeta($cmd)) if ($sshcmd);
+	my @dfinfo = x($cmd);
 	# Mount informations
 	$cmd = 'mount -l 2>/dev/null';
-	$cmd = $sshcmd . ' "' . $cmd . "\"" if ($sshcmd);
-	my @mountinfo = `$cmd`;
+	$cmd = sprintf("%s %s", $sshcmd, quotemeta($cmd)) if ($sshcmd);
+	my @mountinfo = x($cmd);
 	# Fstab informations
 	$cmd = 'cat /etc/fstab 2>/dev/null';
-	$cmd = $sshcmd . ' "' . $cmd . "\"" if ($sshcmd);
-	my @fstabinfo = `$cmd | grep -v "^#"`;
+	$cmd = sprintf("%s %s", $sshcmd, quotemeta($cmd)) if ($sshcmd);
+	my @fstabinfo = x("$cmd | grep -v \"^#\"");
 	# PCI information
 	$cmd = 'lspci 2>/dev/null';
-	$cmd = $sshcmd . ' "' . $cmd . "\"" if ($sshcmd);
-	my @pciinfo = `$cmd`;
+	$cmd = sprintf("%s %s", $sshcmd, quotemeta($cmd)) if ($sshcmd);
+	my @pciinfo = x($cmd);
 	# Release informations
 	$cmd = 'cat /etc/*release 2>/dev/null';
-	$cmd = $sshcmd . ' "' . $cmd . "\"" if ($sshcmd);
-	my @releaseinfo = `$cmd`;
+	$cmd = sprintf("%s %s", $sshcmd, quotemeta($cmd)) if ($sshcmd);
+	my @releaseinfo = x($cmd);
 	# Process list
 	$cmd = 'ps -faux 2>/dev/null';
-	$cmd = $sshcmd . ' "' . $cmd . "\"" if ($sshcmd);
-	my @pslist = `$cmd`;
+	$cmd = sprintf("%s %s", $sshcmd, quotemeta($cmd)) if ($sshcmd);
+	my @pslist = x($cmd);
 	# System kernel tuning parameters
 	$cmd = '/sbin/sysctl -a 2>/dev/null';
-	$cmd = $sshcmd . ' "' . $cmd . "\"" if ($sshcmd);
-	my @system = `$cmd | grep -E "vm.nr_hugepages |vm.overcommit|vm.dirty_.*(ratio|bytes)|swappiness|zone_reclaim_mode|shmmax|shmall"`;
+	$cmd = sprintf("%s %s", $sshcmd, quotemeta($cmd)) if ($sshcmd);
+	my @system = x(sprintf("%s | grep -E \"vm.nr_hugepages |vm.overcommit|vm.dirty_.*(ratio|bytes)|swappiness|zone_reclaim_mode|shmmax|shmall\"", $cmd));
 	unless(open(OUT, ">>$OUT_DIR/sysinfo.txt")) {
 		&dprint("FATAL: can not write into file $OUT_DIR/sysinfo.txt\n");
 		exit 1;
 	}
 	$cmd = 'cat /sys/kernel/mm/*transparent_hugepage/enabled 2>/dev/null';
-	$cmd = $sshcmd . ' "' . $cmd . "\"" if ($sshcmd);
-	my $ret = `$cmd`;
+	$cmd = sprintf("%s %s", $sshcmd, quotemeta($cmd)) if ($sshcmd);
+	my $ret = x($cmd);
 	push(@system, "/sys/kernel/mm/transparent_hugepage/enabled: " . $ret);
 	$cmd = 'cat /sys/kernel/mm/*transparent_hugepage/defrag 2>/dev/null';
-	$cmd = $sshcmd . ' "' . $cmd . "\"" if ($sshcmd);
-	$ret = `$cmd`;
+	$cmd = sprintf("%s %s", $sshcmd, quotemeta($cmd)) if ($sshcmd);
+	$ret = x($cmd);
 	push(@system, "/sys/kernel/mm/transparent_hugepage/defrag: " . $ret);
 	$cmd = 'cat /sys/kernel/mm/*transparent_hugepage/khugepaged/defrag 2>/dev/null';
-	$cmd = $sshcmd . ' "' . $cmd . "\"" if ($sshcmd);
-	$ret = `$cmd`;
+	$cmd = sprintf("%s %s", $sshcmd, quotemeta($cmd)) if ($sshcmd);
+	$ret = x($cmd);
 	push(@system, "/sys/kernel/mm/transparent_hugepage/khugepaged/defrag: " . $ret);
 	print OUT "[CPU]\n";
 	print OUT @cpuinfo;
@@ -1941,13 +1946,9 @@ sub get_proc_name
 
 	my $LOCAL_PSQL_PROG = $PSQL_PROG;
 	if ($database && ($LOCAL_PSQL_PROG !~ s/-d $dbnames[0]/-d $database/i)) {
-		if ($database !~ /^[a-z0-9\_\-]+$/i) {
-			$LOCAL_PSQL_PROG .= " -d '$database'";
-		} else {
-			$LOCAL_PSQL_PROG .= " -d $database";
-		}
+		$LOCAL_PSQL_PROG .= " -d " . quotemeta($database);
 	}
-	my @db_proc = `$LOCAL_PSQL_PROG -c "SELECT n.nspname||'.'||p.proname FROM pg_proc p, pg_namespace n WHERE p.pronamespace=n.oid AND n.nspname NOT IN ('pg_catalog', 'information_schema');"`;
+	my @db_proc = sql($LOCAL_PSQL_PROG, "SELECT n.nspname||'.'||p.proname FROM pg_proc p, pg_namespace n WHERE p.pronamespace=n.oid AND n.nspname NOT IN ('pg_catalog', 'information_schema')");
 	if ($? != 0) {
 		&dprint("FATAL: psql error.\n");
 		# remove the pidfile
@@ -1971,13 +1972,9 @@ sub get_triggers
 
 	my $LOCAL_PSQL_PROG = $PSQL_PROG;
 	if ($database && ($LOCAL_PSQL_PROG !~ s/-d $dbnames[0]/-d $database/i)) {
-		if ($database !~ /^[a-z0-9\_\-]+$/i) {
-			$LOCAL_PSQL_PROG .= " -d '$database'";
-		} else {
-			$LOCAL_PSQL_PROG .= " -d $database";
-		}
+		$LOCAL_PSQL_PROG .= " -d " . quotemeta($database);
 	}
-	my $db_trigger = `$LOCAL_PSQL_PROG -c "SELECT count(tgname) FROM pg_trigger WHERE NOT tgisinternal;"`;
+	my $db_trigger = sql($LOCAL_PSQL_PROG, "SELECT count(tgname) FROM pg_trigger WHERE NOT tgisinternal");
 	if ($? != 0) {
 		&dprint("FATAL: psql error.\n");
 		# remove the pidfile
@@ -2082,7 +2079,7 @@ sub dump_pgdbrolesetting
 ####
 sub get_configuration_files
 {
-	my @cfiles = `$PSQL_PROG -c "SELECT setting FROM pg_settings WHERE name IN ('config_file','hba_file','ident_file','data_directory') ORDER BY name;"`;
+	my @cfiles = sql($PSQL_PROG, "SELECT setting FROM pg_settings WHERE name IN ('config_file','hba_file','ident_file','data_directory') ORDER BY name;");
 	if ($? != 0) {
 		&dprint("FATAL: psql error.\n");
 		# remove the pidfile
@@ -2306,6 +2303,6 @@ sub compress_files
 
 	&dprint("LOG: compressing directory $dir using $GZIP_PROG.\n");
 
-	`$GZIP_PROG $dir/*`;
+	x(sprintf("%s %s/*", $GZIP_PROG, quotemeta($dir)));
 
 }
